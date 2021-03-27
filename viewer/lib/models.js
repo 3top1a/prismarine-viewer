@@ -1,5 +1,34 @@
 const { Vec3 } = require('vec3')
 
+const tints = require('minecraft-data')('1.16.2').tints
+
+for (const key of Object.keys(tints)) {
+  tints[key] = prepareTints(tints[key])
+}
+
+function prepareTints (tints) {
+  const map = new Map()
+  const defaultValue = tintToGl(tints.default)
+  for (let { keys, color } of tints.data) {
+    color = tintToGl(color)
+    for (const key of keys) {
+      map.set(`${key}`, color)
+    }
+  }
+  return new Proxy(map, {
+    get: (target, key) => {
+      return target.has(key) ? target.get(key) : defaultValue
+    }
+  })
+}
+
+function tintToGl (tint) {
+  const r = (tint >> 16) & 0xff
+  const g = (tint >> 8) & 0xff
+  const b = tint & 0xff
+  return [r / 255, g / 255, b / 255]
+}
+
 const elemFaces = {
   up: {
     dir: [0, 1, 0],
@@ -79,7 +108,7 @@ function getLiquidRenderHeight (world, block, type) {
   return ((block.metadata >= 8 ? 8 : 7 - block.metadata) + 1) / 9
 }
 
-function renderLiquid (world, cursor, texture, type, block, water, attr) {
+function renderLiquid (world, cursor, texture, type, biome, water, attr) {
   const heights = []
   for (let z = -1; z <= 1; z++) {
     for (let x = -1; x <= 1; x++) {
@@ -108,7 +137,8 @@ function renderLiquid (world, cursor, texture, type, block, water, attr) {
       let m = 1 // Fake lighting to improve lisibility
       if (Math.abs(dir[0]) > 0) m = 0.6
       else if (Math.abs(dir[2]) > 0) m = 0.8
-      tint = [0.247 * m, 0.463 * m, 0.894 * m] // TODO: correct tint for the biome
+      tint = tints.water[biome]
+      tint = [tint[0] * m, tint[1] * m, tint[2] * m]
     }
 
     const u = texture.u
@@ -198,7 +228,7 @@ function buildRotationMatrix (axis, degree) {
   return matrix
 }
 
-function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block) {
+function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, biome) {
   const cullIfIdentical = block.name.indexOf('glass') >= 0
 
   for (const face in element.faces) {
@@ -231,7 +261,17 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
     let tint = [1, 1, 1]
     if (eFace.tintindex !== undefined) {
       if (eFace.tintindex === 0) {
-        tint = [0.568, 0.741, 0.349] // TODO: correct tint for each block
+        if (block.name === 'redstone_wire') {
+          tint = tints.redstone[`${block.getProperties().power}`]
+        } else if (block.name === 'birch_leaves' ||
+                   block.name === 'spruce_leaves' ||
+                   block.name === 'lily_pad') {
+          tint = tints.constant[block.name]
+        } else if (block.name.includes('leaves') || block.name === 'vine') {
+          tint = tints.foliage[biome]
+        } else {
+          tint = tints.grass[biome]
+        }
       }
     }
 
@@ -301,7 +341,7 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
         // TODO: correctly interpolate ao light based on pos (evaluate once for each corner of the block)
 
         const ao = (side1Block && side2Block) ? 0 : (3 - (side1Block + side2Block + cornerBlock))
-        light = ao / 3
+        light = (ao + 1) / 4
         aos.push(ao)
       }
 
@@ -343,6 +383,7 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
     for (cursor.z = sz; cursor.z < sz + 16; cursor.z++) {
       for (cursor.x = sx; cursor.x < sx + 16; cursor.x++) {
         const block = world.getBlock(cursor)
+        const biome = block.biome.name
         if (block.variant === undefined) {
           block.variant = getModelVariants(block, blocksStates)
         }
@@ -351,9 +392,9 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
           if (!variant || !variant.model) continue
 
           if (block.name === 'water') {
-            renderLiquid(world, cursor, variant.model.textures.particle, block.type, block, true, attr)
+            renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, true, attr)
           } else if (block.name === 'lava') {
-            renderLiquid(world, cursor, variant.model.textures.particle, block.type, block, false, attr)
+            renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, false, attr)
           } else {
             let globalMatrix = null
             let globalShift = null
@@ -371,7 +412,7 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
             }
 
             for (const element of variant.model.elements) {
-              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block)
+              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome)
             }
           }
         }
@@ -380,7 +421,7 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
   }
 
   let ndx = attr.positions.length / 3
-  for (let i = 0; i < attr.t_positions.length / 3; i++) {
+  for (let i = 0; i < attr.t_positions.length / 12; i++) {
     attr.indices.push(
       ndx, ndx + 1, ndx + 2,
       ndx + 2, ndx + 1, ndx + 3,
